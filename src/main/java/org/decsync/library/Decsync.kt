@@ -272,7 +272,6 @@ class Decsync<in T>(
         val pathPred = { path: List<String> -> path.isEmpty() || path.first() != ownAppId }
         FileUtils.listFilesRecursiveRelative(newEntriesDir, readBytesDir, pathPred)
                 .map { getNewEntriesLocation(it.drop(1), it.first()) }
-                //.filter { it.newEntriesFile.isFile } // TODO: why?
                 .forEach { executeEntriesLocation(it, extra) }
         Log.d(TAG, "Sync complete")
         syncComplete(extra)
@@ -360,6 +359,20 @@ class Decsync<in T>(
             }
             entriesLocation.storedEntriesFile.parentFile.mkdirs()
             entriesLocation.storedEntriesFile.appendText(builder.toString())
+
+            val maxDatetime = entries.map { it.datetime }.max()
+            if (maxDatetime != null) {
+                val latestStoredEntryFile = File("$dir/info/$ownAppIdEncoded/latest-stored-entry")
+                val latestDatetime =
+                        if (latestStoredEntryFile.exists())
+                            latestStoredEntryFile.readText()
+                        else
+                            null
+                if (latestDatetime == null || maxDatetime > latestDatetime) {
+                    latestStoredEntryFile.parentFile.mkdirs()
+                    latestStoredEntryFile.writeText(maxDatetime)
+                }
+            }
         } catch (e: Exception) {
             Log.e(TAG, e.message)
         }
@@ -402,31 +415,7 @@ class Decsync<in T>(
      */
     fun initStoredEntries() {
         // Get the most up-to-date appId
-        var appIdVar: String? = null
-        var maxDatetime: String? = null
-        FileUtils.listFilesRecursiveRelative(File("$dir/stored-entries"))
-                .filter { it.isNotEmpty() }
-                .forEach { path ->
-                    val pathString = FileUtils.pathToString(path)
-                    val file = File("$dir/stored-entries/$pathString")
-                    file.forEachLine { line ->
-                        val entry = Entry.fromLine(line)
-                        if (entry != null) {
-                            if ((maxDatetime?.compareTo(entry.datetime) ?: -1) < 0 ||
-                                    path.first() == ownAppId && entry.datetime == maxDatetime) // Prefer own appId
-                            {
-                                maxDatetime = entry.datetime
-                                appIdVar = path.first()
-                            }
-                        }
-                    }
-                }
-
-        val appId = appIdVar
-        if (appId == null) {
-            Log.i(TAG, "No appId found for initialization")
-            return
-        }
+        val appId = latestAppId()
 
         // Copy the stored files and update the read bytes
         if (appId != ownAppId) {
@@ -451,6 +440,28 @@ class Decsync<in T>(
                 file.writeText(size.toString())
             }
         }
+    }
+
+    /**
+     * Returns the most up-to-date appId. This is the appId which has stored the most recent entry.
+     * In case of a tie, the appId corresponding to the current application is used, if possible.
+     */
+    fun latestAppId(): String {
+        var latestAppId: String? = null
+        var latestDatetime: String? = null
+        (File("$dir/info").listFiles { file -> file.name[0] != '.' } ?: emptyArray())
+                .map { Pair(FileUtils.urldecode(it.name), File("$it/latest-stored-entry")) }
+                .filter { (appId, file) -> appId != null && file.isFile }
+                .forEach { (appId, file) ->
+                    val datetime = file.readText()
+                    if ((latestDatetime?.compareTo(datetime) ?: -1) < 0 ||
+                            appId == ownAppId && datetime == latestDatetime) // Prefer own appId
+                    {
+                        latestDatetime = datetime
+                        latestAppId = appId
+                    }
+                }
+        return latestAppId ?: ownAppId
     }
 
     companion object {
