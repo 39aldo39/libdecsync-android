@@ -33,6 +33,15 @@ import java.util.*
 
 const val TAG = "DecSync"
 
+const val SUPPORTED_VERSION = 1
+
+sealed class DecsyncException(message: String, cause: Throwable? = null) : Exception(message, cause)
+class InvalidInfoException(e: Exception) : DecsyncException("Invalid .decsync-info", e)
+class UnsupportedVersionException(val requiredVersion: Int, val supportedVersion: Int) : DecsyncException(
+        "Unsupported DecSync version.\n" +
+                "Required version: $requiredVersion.\n" +
+                "Supported version: $supportedVersion.")
+
 /**
  * The `DecSync` class represents an interface to synchronized key-value mappings stored on the file
  * system.
@@ -78,6 +87,7 @@ const val TAG = "DecSync"
  * listener whose method [OnEntryUpdateListener.matchesPath] returns true.
  * @property syncComplete an optional function which is called when a sync is complete. For example,
  * it can be used to update the UI.
+ * @throws DecsyncException if a DecSync configuration error occurred.
  */
 class Decsync<in T>(
         private val dir: String,
@@ -87,6 +97,10 @@ class Decsync<in T>(
 ) {
     private val ownAppIdEncoded = FileUtils.urlencode(ownAppId)
     private var observer: FolderObserver? = null
+
+    init {
+        checkDecsyncSubdirInfo(dir)
+    }
 
     /**
      * Represents an [Entry] with its path.
@@ -470,9 +484,12 @@ class Decsync<in T>(
          * [DecSync directory][decsyncDir] without specifying an appId, or `null` if there is no
          * such value. The use of this method is discouraged. It is recommended to use the method
          * [executeStoredEntries] when possible.
+         *
+         * @throws DecsyncException if a DecSync configuration error occurred.
          */
         fun getStoredStaticValue(decsyncDir: String, path: List<String>, key: Any): Any? {
             Log.d(TAG, "Get value for key ${jsonToString(key)} for path ${pathToString(path)} in $decsyncDir")
+            checkDecsyncSubdirInfo(decsyncDir)
             val pathString = FileUtils.pathToString(path)
             var result: Any? = null
             var maxDatetime: String? = null
@@ -503,6 +520,44 @@ class Decsync<in T>(
         }
 
         private fun jsonToString(json: Any) = if (json is String) JSONObject.quote(json) else json.toString()
+    }
+}
+
+private fun checkDecsyncSubdirInfo(decsyncSubdir: String) {
+    val syncTypes = listOf("rss", "contacts", "calendars")
+    val file = File(decsyncSubdir)
+    when {
+        file.name in syncTypes -> file.parentFile
+        file.parentFile.name in syncTypes -> file.parentFile.parentFile
+        else -> null
+    }?.let { checkDecsyncInfo(it.path) }
+}
+
+/**
+ * Checks whether the .decsync-info file in [decsyncDir] is of the right format and contains a
+ * supported version. If it does not exist, a new one with version 1 is created.
+ *
+ * @throws DecsyncException if a DecSync configuration error occurred.
+ */
+fun checkDecsyncInfo(decsyncDir: String) {
+    val infoFile = File(decsyncDir, ".decsync-info")
+    if (infoFile.isFile) {
+        try {
+            val text = infoFile.readText()
+            val obj = JSONTokener(text).nextValue() as? JSONObject
+                    ?: throw JSONException("JSON value is not an Object")
+            val decsyncVersion = obj.getInt("version")
+            if (decsyncVersion !in 1..SUPPORTED_VERSION) {
+                throw UnsupportedVersionException(decsyncVersion, SUPPORTED_VERSION)
+            }
+        } catch (e: JSONException) {
+            throw InvalidInfoException(e)
+        }
+    } else {
+        val obj = JSONObject()
+        obj.put("version", 1)
+        val text = obj.toString()
+        infoFile.writeText(text)
     }
 }
 
@@ -538,8 +593,10 @@ fun getDefaultDecsyncBaseDir(): String = "${Environment.getExternalStorageDirect
  * @param syncType the type of data to sync. For example, "contacts" or "calendars".
  * @param ignoreDeleted `true` to ignore deleted collections. A collection is considered deleted if
  * the most recent value of the key "deleted" with the path ["info"] is set to `true`.
+ * @throws DecsyncException if a DecSync configuration error occurred.
  */
 fun listDecsyncCollections(decsyncBaseDir: String? = null, syncType: String, ignoreDeleted: Boolean = true): List<String> {
+    checkDecsyncInfo(decsyncBaseDir ?: getDefaultDecsyncBaseDir())
     val decsyncSubdir = getDecsyncSubdir(decsyncBaseDir, syncType)
     return (File(decsyncSubdir).listFiles() ?: emptyArray()).mapNotNull(
         fun(dir): String? {
