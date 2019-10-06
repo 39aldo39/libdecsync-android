@@ -557,6 +557,7 @@ fun checkDecsyncInfo(decsyncDir: String) {
         val obj = JSONObject()
         obj.put("version", 1)
         val text = obj.toString()
+        infoFile.parentFile.mkdirs()
         infoFile.writeText(text)
     }
 }
